@@ -217,7 +217,10 @@ typedef enum message_code_t {
 	WM_EVENT_SCAN_DONE = 11,
 	WM_EVENT_STA_GOT_IP = 12,
 	WM_ORDER_STOP_AP = 13,
-	WM_MESSAGE_CODE_COUNT = 14 /* important for the callback array */
+	WM_ORDER_CLEAR_WIFI_CONFIG = 14,
+	WM_EVENT_WIFI_CONFIG_CLEARED = 15,
+	WM_EVENT_WIFI_CONFIG_SAVED = 16,
+	WM_MESSAGE_CODE_COUNT = 17 /* important for the callback array */	
 
 }message_code_t;
 
@@ -307,6 +310,11 @@ void wifi_manager_scan_async();
 
 
 /**
+ * @brief clears the current STA wifi config in flash ram storage.
+ */
+esp_err_t wifi_manager_clear_sta_config();
+
+/**
  * @brief saves the current STA wifi config to flash ram storage.
  */
 esp_err_t wifi_manager_save_sta_config();
@@ -334,6 +342,12 @@ void wifi_manager_scan_awifi_manager_send_messagesync();
  * @brief requests to disconnect and forget about the access point.
  */
 void wifi_manager_disconnect_async();
+
+
+/**
+ * @brief requests to clear wifi configuration.
+ */
+void wifi_manager_clear_wifi_configuration();
 
 /**
  * @brief Tries to get access to json buffer mutex.

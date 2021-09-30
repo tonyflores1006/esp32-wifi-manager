@@ -141,6 +141,9 @@ const int WIFI_MANAGER_SCAN_BIT = BIT7;
 /* @brief When set, means user requested for a disconnect */
 const int WIFI_MANAGER_REQUEST_DISCONNECT_BIT = BIT8;
 
+/* @brief When set, means user requested to clear wifi configuration */
+const int WIFI_MANAGER_REQUEST_CLEAR_WIFI_CONFIG_BIT = BIT9;
+
 
 
 void wifi_manager_timer_retry_cb( TimerHandle_t xTimer ){
@@ -172,6 +175,10 @@ void wifi_manager_disconnect_async(){
 	wifi_manager_send_message(WM_ORDER_DISCONNECT_STA, NULL);
 }
 
+void wifi_manager_clear_wifi_configuration(){
+	//ESP_LOGI(TAG, "BEFORE SEND MESSAGE: ORDER_CLEAR_WIFI_CONFIG");
+	wifi_manager_send_message(WM_ORDER_CLEAR_WIFI_CONFIG, NULL);	
+}
 
 void wifi_manager_start(){
 
@@ -209,7 +216,54 @@ void wifi_manager_start(){
 	wifi_manager_shutdown_ap_timer = xTimerCreate( NULL, pdMS_TO_TICKS(WIFI_MANAGER_SHUTDOWN_AP_TIMER), pdFALSE, ( void * ) 0, wifi_manager_timer_shutdown_ap_cb);
 
 	/* start wifi manager task */
-	xTaskCreate(&wifi_manager, "wifi_manager", 4096, NULL, WIFI_MANAGER_TASK_PRIORITY, &task_wifi_manager);
+	//xTaskCreate(&wifi_manager, "wifi_manager", 4096, NULL, WIFI_MANAGER_TASK_PRIORITY, &task_wifi_manager);
+	xTaskCreatePinnedToCore(&wifi_manager, "wifi_manager", 4096, NULL, WIFI_MANAGER_TASK_PRIORITY, &task_wifi_manager, 0);
+}
+
+esp_err_t wifi_manager_clear_sta_config(){
+
+	nvs_handle handle;
+	esp_err_t esp_err;
+
+	ESP_LOGI(TAG, "About to clear wifi config!!");
+
+	if(nvs_sync_lock( portMAX_DELAY )){
+
+		esp_err = nvs_open(wifi_manager_nvs_namespace, NVS_READWRITE, &handle);
+		if (esp_err != ESP_OK){
+			nvs_sync_unlock();
+			return esp_err;
+		}
+
+		esp_err = nvs_erase_all(handle);
+        if (esp_err != ESP_OK)
+        {
+            return esp_err;
+        }
+        else
+        {
+            ESP_LOGI(TAG, "nvs_erase_all success");
+            //commit changes
+            esp_err = nvs_commit(handle);
+            if (esp_err != ESP_OK)
+            {
+                return esp_err;
+            }
+            else
+            {
+                ESP_LOGI(TAG, "nvs_commit success");
+				wifi_manager_send_message(WM_EVENT_WIFI_CONFIG_CLEARED, NULL);
+            }
+        }	
+        //close NVS page
+        nvs_close(handle);
+		nvs_sync_unlock();		
+	}
+	else{
+		ESP_LOGE(TAG, "wifi_manager_clear_sta_config failed to acquire nvs_sync mutex");
+	}
+
+	return ESP_OK;
 }
 
 esp_err_t wifi_manager_save_sta_config(){
@@ -225,8 +279,6 @@ esp_err_t wifi_manager_save_sta_config(){
 	memset(&tmp_settings, 0x00, sizeof(tmp_settings));
 	bool change = false;
 
-	ESP_LOGI(TAG, "About to save config to flash!!");
-
 	if(wifi_manager_config_sta && nvs_sync_lock( portMAX_DELAY )){
 
 		esp_err = nvs_open(wifi_manager_nvs_namespace, NVS_READWRITE, &handle);
@@ -239,6 +291,7 @@ esp_err_t wifi_manager_save_sta_config(){
 		esp_err = nvs_get_blob(handle, "ssid", tmp_conf.sta.ssid, &sz);
 		if( (esp_err == ESP_OK  || esp_err == ESP_ERR_NVS_NOT_FOUND) && strcmp( (char*)tmp_conf.sta.ssid, (char*)wifi_manager_config_sta->sta.ssid) != 0){
 			/* different ssid or ssid does not exist in flash: save new ssid */
+
 			esp_err = nvs_set_blob(handle, "ssid", wifi_manager_config_sta->sta.ssid, 32);
 			if (esp_err != ESP_OK){
 				nvs_sync_unlock();
@@ -253,6 +306,7 @@ esp_err_t wifi_manager_save_sta_config(){
 		esp_err = nvs_get_blob(handle, "password", tmp_conf.sta.password, &sz);
 		if( (esp_err == ESP_OK  || esp_err == ESP_ERR_NVS_NOT_FOUND) && strcmp( (char*)tmp_conf.sta.password, (char*)wifi_manager_config_sta->sta.password) != 0){
 			/* different password or password does not exist in flash: save new password */
+			
 			esp_err = nvs_set_blob(handle, "password", wifi_manager_config_sta->sta.password, 64);
 			if (esp_err != ESP_OK){
 				nvs_sync_unlock();
@@ -293,6 +347,7 @@ esp_err_t wifi_manager_save_sta_config(){
 
 		if(change){
 			esp_err = nvs_commit(handle);
+			wifi_manager_send_message(WM_EVENT_WIFI_CONFIG_SAVED, NULL);
 		}
 		else{
 			ESP_LOGI(TAG, "Wifi config was not saved to flash because no change has been detected.");
@@ -963,7 +1018,7 @@ void wifi_manager( void * pvParameters ){
 	ESP_ERROR_CHECK(esp_wifi_start());
 
 	/* start http server */
-	http_app_start(false);
+	http_app_start(true);
 
 	/* wifi scanner config */
 	wifi_scan_config_t scan_config = {
@@ -1321,6 +1376,35 @@ void wifi_manager( void * pvParameters ){
 				if(cb_ptr_arr[msg.code]) (*cb_ptr_arr[msg.code])(NULL);
 
 				break;
+
+			case WM_ORDER_CLEAR_WIFI_CONFIG:
+				ESP_LOGI(TAG, "MESSAGE: ORDER_CLEAR_WIFI_CONFIG");
+
+				/* precise this is coming from a user request */
+				xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_REQUEST_CLEAR_WIFI_CONFIG_BIT);
+
+				ESP_ERROR_CHECK(wifi_manager_clear_sta_config());
+
+				/* callback */
+				if(cb_ptr_arr[msg.code]) (*cb_ptr_arr[msg.code])(NULL);
+
+				break;
+
+			case WM_EVENT_WIFI_CONFIG_SAVED:
+				ESP_LOGI(TAG, "MESSAGE: EVENT_WIFI_CONFIG_SAVED");
+
+				/* callback and free memory allocated for the void* param */
+				if(cb_ptr_arr[msg.code]) (*cb_ptr_arr[msg.code])(NULL);
+
+				break;
+
+			case WM_EVENT_WIFI_CONFIG_CLEARED:
+				ESP_LOGI(TAG, "MESSAGE: EVENT_WIFI_CONFIG_CLEARED");
+
+				/* callback and free memory allocated for the void* param */
+				if(cb_ptr_arr[msg.code]) (*cb_ptr_arr[msg.code])(NULL);
+
+				break;				
 
 			default:
 				break;
